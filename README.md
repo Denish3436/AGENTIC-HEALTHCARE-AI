@@ -3,8 +3,6 @@
 
 AI-powered healthcare platform with multi-agent systems, FHIR integration, and cloud-native DevOps architecture.
 
----
-
 ## 🚀 Quick Start
 
 ```bash

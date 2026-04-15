@@ -1,7 +1,7 @@
 
 # 🏥 Agentic Healthcare AI Platform
 
-> AI-powered healthcare platform with multi-agent systems, FHIR integration, and cloud-native DevOps architecture.
+AI-powered healthcare platform with multi-agent systems, FHIR integration, and cloud-native DevOps architecture.
 
 ---
 
@@ -19,7 +19,7 @@ cp env.template .env
 
 ---
 
-## 💡 About the Project
+💡 About the Project
 
 This project demonstrates a **modern DevOps + AI architecture for healthcare systems**, combining:
 
@@ -97,22 +97,17 @@ This project demonstrates a **modern DevOps + AI architecture for healthcare sys
 * Secrets management via Azure Key Vault
 * Secure API handling
 
----
 
 ## ⚠️ Disclaimer
 
 This project is for **learning and demonstration purposes only** and should not be used for real medical decisions.
 
----
 
 ## 👨‍💻 Author
 
 **Denish Tomar**
 
----
 
 ## ⭐ If you like this project
 
 Give it a ⭐ on GitHub!
-
-```

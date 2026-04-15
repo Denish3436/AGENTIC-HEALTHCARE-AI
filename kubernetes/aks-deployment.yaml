@@ -1,0 +1,499 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: healthcare-ai
+  labels:
+    name: healthcare-ai
+    environment: production
+    compliance: hipaa
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: healthcare-ai-config
+  namespace: healthcare-ai
+data:
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  FHIR_VERSION: "R4"
+  ENABLE_MONITORING: "true"
+  ENABLE_AUDIT_LOGGING: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: healthcare-ai-ui
+  namespace: healthcare-ai
+  labels:
+    app: healthcare-ai-ui
+    tier: frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: healthcare-ai-ui
+  template:
+    metadata:
+      labels:
+        app: healthcare-ai-ui
+        tier: frontend
+        azure.workload.identity/use: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3030"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: healthcare-ai-sa
+      containers:
+      - name: ui
+        image: ${ACR_NAME}.azurecr.io/healthcare-ai-ui:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3030
+          name: http
+          protocol: TCP
+        env:
+        - name: REACT_APP_API_BASE_URL
+          value: "https://api-healthcare-ai.azure-api.net"
+        - name: REACT_APP_ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: healthcare-ai-config
+              key: ENVIRONMENT
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: app-insights-connection-string
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3030
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3030
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: healthcare-ai-crewai
+  namespace: healthcare-ai
+  labels:
+    app: healthcare-ai-crewai
+    tier: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: healthcare-ai-crewai
+  template:
+    metadata:
+      labels:
+        app: healthcare-ai-crewai
+        tier: backend
+        azure.workload.identity/use: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: healthcare-ai-sa
+      containers:
+      - name: crewai
+        image: ${ACR_NAME}.azurecr.io/healthcare-ai-crewai:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        env:
+        - name: AZURE_OPENAI_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: azure-openai-endpoint
+        - name: AZURE_OPENAI_KEY
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: azure-openai-key
+        - name: FHIR_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: fhir-base-url
+        - name: POSTGRES_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: postgres-connection-string
+        - name: REDIS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: redis-connection-string
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: app-insights-connection-string
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: healthcare-ai-autogen
+  namespace: healthcare-ai
+  labels:
+    app: healthcare-ai-autogen
+    tier: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: healthcare-ai-autogen
+  template:
+    metadata:
+      labels:
+        app: healthcare-ai-autogen
+        tier: backend
+        azure.workload.identity/use: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8001"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: healthcare-ai-sa
+      containers:
+      - name: autogen
+        image: ${ACR_NAME}.azurecr.io/healthcare-ai-autogen:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8001
+          name: http
+          protocol: TCP
+        env:
+        - name: AZURE_OPENAI_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: azure-openai-endpoint
+        - name: AZURE_OPENAI_KEY
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: azure-openai-key
+        - name: FHIR_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: fhir-base-url
+        - name: POSTGRES_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: postgres-connection-string
+        - name: REDIS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: redis-connection-string
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: healthcare-ai-secrets
+              key: app-insights-connection-string
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8001
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: healthcare-ai-ui
+  namespace: healthcare-ai
+  labels:
+    app: healthcare-ai-ui
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 3030
+    protocol: TCP
+    name: http
+  selector:
+    app: healthcare-ai-ui
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: healthcare-ai-crewai
+  namespace: healthcare-ai
+  labels:
+    app: healthcare-ai-crewai
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: healthcare-ai-crewai
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: healthcare-ai-autogen
+  namespace: healthcare-ai
+  labels:
+    app: healthcare-ai-autogen
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8001
+    targetPort: 8001
+    protocol: TCP
+    name: http
+  selector:
+    app: healthcare-ai-autogen
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: healthcare-ai-ui-hpa
+  namespace: healthcare-ai
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: healthcare-ai-ui
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: healthcare-ai-crewai-hpa
+  namespace: healthcare-ai
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: healthcare-ai-crewai
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: healthcare-ai-autogen-hpa
+  namespace: healthcare-ai
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: healthcare-ai-autogen
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: healthcare-ai-ingress
+  namespace: healthcare-ai
+  annotations:
+    kubernetes.io/ingress.class: azure/application-gateway
+    appgw.ingress.kubernetes.io/ssl-redirect: "true"
+    appgw.ingress.kubernetes.io/backend-protocol: "http"
+    appgw.ingress.kubernetes.io/health-probe-path: "/health"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+    - healthcare-ai.azurefd.net
+    secretName: healthcare-ai-tls
+  rules:
+  - host: healthcare-ai.azurefd.net
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: healthcare-ai-ui
+            port:
+              number: 80
+      - path: /api/crewai
+        pathType: Prefix
+        backend:
+          service:
+            name: healthcare-ai-crewai
+            port:
+              number: 8000
+      - path: /api/autogen
+        pathType: Prefix
+        backend:
+          service:
+            name: healthcare-ai-autogen
+            port:
+              number: 8001
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: healthcare-ai-sa
+  namespace: healthcare-ai
+  annotations:
+    azure.workload.identity/client-id: "${WORKLOAD_IDENTITY_CLIENT_ID}"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: healthcare-ai-ui-pdb
+  namespace: healthcare-ai
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: healthcare-ai-ui
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: healthcare-ai-crewai-pdb
+  namespace: healthcare-ai
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: healthcare-ai-crewai
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: healthcare-ai-autogen-pdb
+  namespace: healthcare-ai
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: healthcare-ai-autogen

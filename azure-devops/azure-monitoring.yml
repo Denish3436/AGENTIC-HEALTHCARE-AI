@@ -1,0 +1,217 @@
+# Azure Monitor Configuration for Healthcare AI Platform
+# This file defines monitoring, alerting, and observability configurations
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: azure-monitor-config
+  namespace: healthcare-ai
+data:
+  # Application Insights Configuration
+  app-insights-config.json: |
+    {
+      "instrumentationKey": "${APPINSIGHTS_INSTRUMENTATIONKEY}",
+      "connectionString": "${APPINSIGHTS_CONNECTION_STRING}",
+      "enableAutoCollect": true,
+      "samplingPercentage": 100,
+      "maxBatchSize": 100,
+      "maxBatchIntervalMs": 15000,
+      "disableAppInsights": false,
+      "enableDebug": false,
+      "enableConsole": true,
+      "enableLiveMetrics": true,
+      "enableWebInstrumentation": true,
+      "enableAutoRouteTracking": true,
+      "enableRequestTracking": true,
+      "enableExceptionTracking": true,
+      "enableDependencyTracking": true,
+      "enablePerformanceTracking": true,
+      "distributedTracingMode": 2,
+      "enableCorsCorrelation": true,
+      "correlationHeaderExcludedDomains": [
+        "*.queue.core.windows.net"
+      ]
+    }
+
+  # Prometheus Configuration
+  prometheus-config.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: 'aks-healthcare-ai-prod'
+        environment: 'production'
+    
+    scrape_configs:
+      - job_name: 'kubernetes-apiservers'
+        kubernetes_sd_configs:
+          - role: endpoints
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+
+      - job_name: 'kubernetes-nodes'
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+
+      - job_name: 'healthcare-ai-ui'
+        static_configs:
+          - targets: ['healthcare-ai-ui:3030']
+        metrics_path: '/metrics'
+
+      - job_name: 'healthcare-ai-crewai'
+        static_configs:
+          - targets: ['healthcare-ai-crewai:8000']
+        metrics_path: '/metrics'
+
+      - job_name: 'healthcare-ai-autogen'
+        static_configs:
+          - targets: ['healthcare-ai-autogen:8001']
+        metrics_path: '/metrics'
+
+  # Alert Rules
+  alert-rules.yml: |
+    groups:
+      - name: healthcare_ai_alerts
+        interval: 30s
+        rules:
+          # High Error Rate
+          - alert: HighErrorRate
+            expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+            for: 5m
+            labels:
+              severity: critical
+              component: api
+            annotations:
+              summary: "High error rate detected"
+              description: "Error rate is {{ $value }} for {{ $labels.instance }}"
+
+          # High Response Time
+          - alert: HighResponseTime
+            expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+            for: 5m
+            labels:
+              severity: warning
+              component: api
+            annotations:
+              summary: "High response time detected"
+              description: "95th percentile response time is {{ $value }}s"
+
+          # Pod Down
+          - alert: PodDown
+            expr: up{job=~"healthcare-ai-.*"} == 0
+            for: 2m
+            labels:
+              severity: critical
+              component: infrastructure
+            annotations:
+              summary: "Pod is down"
+              description: "{{ $labels.job }} has been down for more than 2 minutes"
+
+          # High CPU Usage
+          - alert: HighCPUUsage
+            expr: rate(container_cpu_usage_seconds_total{namespace="healthcare-ai"}[5m]) > 0.8
+            for: 10m
+            labels:
+              severity: warning
+              component: infrastructure
+            annotations:
+              summary: "High CPU usage detected"
+              description: "CPU usage is {{ $value }} for {{ $labels.pod }}"
+
+          # High Memory Usage
+          - alert: HighMemoryUsage
+            expr: container_memory_usage_bytes{namespace="healthcare-ai"} / container_spec_memory_limit_bytes{namespace="healthcare-ai"} > 0.9
+            for: 5m
+            labels:
+              severity: warning
+              component: infrastructure
+            annotations:
+              summary: "High memory usage detected"
+              description: "Memory usage is {{ $value }} for {{ $labels.pod }}"
+
+          # FHIR API Errors
+          - alert: FHIRAPIErrors
+            expr: rate(fhir_api_errors_total[5m]) > 0.01
+            for: 5m
+            labels:
+              severity: critical
+              component: fhir
+            annotations:
+              summary: "FHIR API errors detected"
+              description: "FHIR API error rate is {{ $value }}"
+
+          # AI Agent Failures
+          - alert: AIAgentFailures
+            expr: rate(ai_agent_failures_total[5m]) > 0.05
+            for: 5m
+            labels:
+              severity: critical
+              component: ai_agents
+            annotations:
+              summary: "AI agent failures detected"
+              description: "AI agent failure rate is {{ $value }}"
+
+          # Database Connection Issues
+          - alert: DatabaseConnectionIssues
+            expr: rate(database_connection_errors_total[5m]) > 0
+            for: 2m
+            labels:
+              severity: critical
+              component: database
+            annotations:
+              summary: "Database connection issues"
+              description: "Database connection error rate is {{ $value }}"
+
+  # Log Analytics Queries
+  log-analytics-queries.json: |
+    {
+      "queries": [
+        {
+          "name": "Error Logs Last Hour",
+          "query": "ContainerLog | where TimeGenerated > ago(1h) | where LogEntry contains 'ERROR' | project TimeGenerated, LogEntry, ContainerName | order by TimeGenerated desc"
+        },
+        {
+          "name": "FHIR API Performance",
+          "query": "requests | where name contains 'fhir' | summarize avg(duration), percentile(duration, 95), percentile(duration, 99) by bin(timestamp, 5m) | order by timestamp desc"
+        },
+        {
+          "name": "AI Agent Metrics",
+          "query": "customMetrics | where name in ('agent_response_time', 'agent_success_rate') | summarize avg(value) by name, bin(timestamp, 5m) | order by timestamp desc"
+        },
+        {
+          "name": "Security Events",
+          "query": "SecurityEvent | where TimeGenerated > ago(24h) | where EventID in (4625, 4648, 4719) | project TimeGenerated, Account, Computer, EventID | order by TimeGenerated desc"
+        },
+        {
+          "name": "Resource Utilization",
+          "query": "Perf | where TimeGenerated > ago(1h) | where ObjectName == 'K8SContainer' | summarize avg(CounterValue) by CounterName, bin(TimeGenerated, 5m) | order by TimeGenerated desc"
+        }
+      ]
+    }

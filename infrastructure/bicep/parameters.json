@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environment": {
+      "value": "prod"
+    },
+    "location": {
+      "value": "eastus"
+    },
+    "secondaryLocation": {
+      "value": "westus2"
+    },
+    "namePrefix": {
+      "value": "healthcare-ai"
+    },
+    "openAIDeploymentName": {
+      "value": "gpt-4"
+    },
+    "enableMonitoring": {
+      "value": true
+    },
+    "enableSecurityCenter": {
+      "value": true
+    },
+    "tags": {
+      "value": {
+        "Environment": "Production",
+        "Project": "Healthcare-AI",
+        "ManagedBy": "Azure-DevOps",
+        "CostCenter": "Healthcare-Innovation",
+        "Compliance": "HIPAA",
+        "Owner": "DevOps-Team",
+        "Department": "Healthcare-Technology"
+      }
+    }
+  }
+}

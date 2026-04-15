@@ -1,0 +1,352 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - release/*
+  paths:
+    exclude:
+      - docs/**
+      - README.md
+      - .gitignore
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    exclude:
+      - docs/**
+      - README.md
+
+variables:
+  - group: healthcare-ai-variables
+  - name: dockerRegistryServiceConnection
+    value: 'healthcare-acr-connection'
+  - name: imageRepository
+    value: 'healthcare-ai'
+  - name: containerRegistry
+    value: '$(ACR_NAME).azurecr.io'
+  - name: dockerfilePath
+    value: '$(Build.SourcesDirectory)/docker'
+  - name: tag
+    value: '$(Build.BuildId)'
+  - name: vmImageName
+    value: 'ubuntu-latest'
+  - name: azureSubscription
+    value: 'healthcare-ai-subscription'
+  - name: resourceGroupName
+    value: 'rg-healthcare-ai-prod'
+  - name: aksClusterName
+    value: 'aks-healthcare-ai-prod'
+  - name: namespace
+    value: 'healthcare-ai'
+
+stages:
+  - stage: Build
+    displayName: 'Build and Push Container Images'
+    jobs:
+      - job: SecurityScan
+        displayName: 'Security and Code Quality Scan'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+            displayName: 'Use Python 3.11'
+
+          - script: |
+              pip install bandit safety pylint black flake8
+              bandit -r . -f json -o bandit-report.json || true
+              safety check --json > safety-report.json || true
+              pylint **/*.py --output-format=json > pylint-report.json || true
+            displayName: 'Run Python Security Scans'
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: '$(Build.SourcesDirectory)'
+              ArtifactName: 'security-reports'
+            displayName: 'Publish Security Reports'
+
+      - job: BuildUI
+        displayName: 'Build React UI'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '18.x'
+            displayName: 'Install Node.js'
+
+          - script: |
+              cd ui
+              npm ci
+              npm run lint
+              npm run test -- --coverage --watchAll=false
+              npm run build
+            displayName: 'Build and Test UI'
+
+          - task: Docker@2
+            displayName: 'Build UI Docker Image'
+            inputs:
+              command: buildAndPush
+              repository: $(imageRepository)-ui
+              dockerfile: $(dockerfilePath)/Dockerfile.ui
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(tag)
+                latest
+
+          - task: AzureCLI@2
+            displayName: 'Scan UI Image with Trivy'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az acr login --name $(ACR_NAME)
+                docker pull aquasec/trivy:latest
+                docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                  aquasec/trivy image --severity HIGH,CRITICAL \
+                  $(containerRegistry)/$(imageRepository)-ui:$(tag)
+
+      - job: BuildCrewAI
+        displayName: 'Build CrewAI Agent Service'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+            displayName: 'Use Python 3.11'
+
+          - script: |
+              cd crewai_fhir_agent
+              pip install -r requirements.txt
+              pytest tests/ --junitxml=junit/test-results.xml --cov=. --cov-report=xml
+            displayName: 'Run CrewAI Tests'
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFiles: '**/test-*.xml'
+              testRunTitle: 'CrewAI Tests'
+
+          - task: Docker@2
+            displayName: 'Build CrewAI Docker Image'
+            inputs:
+              command: buildAndPush
+              repository: $(imageRepository)-crewai
+              dockerfile: $(dockerfilePath)/Dockerfile.crewai
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(tag)
+                latest
+
+      - job: BuildAutogen
+        displayName: 'Build Autogen Agent Service'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+            displayName: 'Use Python 3.11'
+
+          - script: |
+              cd autogen_fhir_agent
+              pip install -r requirements.txt
+              pytest tests/ --junitxml=junit/test-results.xml --cov=. --cov-report=xml
+            displayName: 'Run Autogen Tests'
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFiles: '**/test-*.xml'
+              testRunTitle: 'Autogen Tests'
+
+          - task: Docker@2
+            displayName: 'Build Autogen Docker Image'
+            inputs:
+              command: buildAndPush
+              repository: $(imageRepository)-autogen
+              dockerfile: $(dockerfilePath)/Dockerfile.autogen
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(tag)
+                latest
+
+  - stage: DeployDev
+    displayName: 'Deploy to Development'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+    jobs:
+      - deployment: DeployAKSDev
+        displayName: 'Deploy to AKS Development'
+        pool:
+          vmImage: $(vmImageName)
+        environment: 'healthcare-ai-dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: KubernetesManifest@0
+                  displayName: 'Create/Update Namespace'
+                  inputs:
+                    action: 'deploy'
+                    kubernetesServiceConnection: 'aks-dev-connection'
+                    namespace: '$(namespace)-dev'
+                    manifests: |
+                      $(Pipeline.Workspace)/manifests/namespace.yaml
+
+                - task: KubernetesManifest@0
+                  displayName: 'Deploy to AKS'
+                  inputs:
+                    action: 'deploy'
+                    kubernetesServiceConnection: 'aks-dev-connection'
+                    namespace: '$(namespace)-dev'
+                    manifests: |
+                      $(Pipeline.Workspace)/manifests/deployment.yaml
+                      $(Pipeline.Workspace)/manifests/service.yaml
+                      $(Pipeline.Workspace)/manifests/ingress.yaml
+                    containers: |
+                      $(containerRegistry)/$(imageRepository)-ui:$(tag)
+                      $(containerRegistry)/$(imageRepository)-crewai:$(tag)
+                      $(containerRegistry)/$(imageRepository)-autogen:$(tag)
+
+                - task: AzureCLI@2
+                  displayName: 'Configure Application Insights'
+                  inputs:
+                    azureSubscription: $(azureSubscription)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az monitor app-insights component create \
+                        --app healthcare-ai-dev \
+                        --location eastus \
+                        --resource-group $(resourceGroupName)-dev
+
+  - stage: DeployProd
+    displayName: 'Deploy to Production'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployAKSProd
+        displayName: 'Deploy to AKS Production'
+        pool:
+          vmImage: $(vmImageName)
+        environment: 'healthcare-ai-prod'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Pre-deployment Health Check'
+                  inputs:
+                    azureSubscription: $(azureSubscription)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az aks get-credentials --resource-group $(resourceGroupName) --name $(aksClusterName)
+                      kubectl get nodes
+                      kubectl get pods -n $(namespace)
+
+                - task: KubernetesManifest@0
+                  displayName: 'Deploy to AKS Production'
+                  inputs:
+                    action: 'deploy'
+                    kubernetesServiceConnection: 'aks-prod-connection'
+                    namespace: '$(namespace)'
+                    manifests: |
+                      $(Pipeline.Workspace)/manifests/deployment.yaml
+                      $(Pipeline.Workspace)/manifests/service.yaml
+                      $(Pipeline.Workspace)/manifests/ingress.yaml
+                      $(Pipeline.Workspace)/manifests/hpa.yaml
+                    containers: |
+                      $(containerRegistry)/$(imageRepository)-ui:$(tag)
+                      $(containerRegistry)/$(imageRepository)-crewai:$(tag)
+                      $(containerRegistry)/$(imageRepository)-autogen:$(tag)
+
+                - task: AzureCLI@2
+                  displayName: 'Configure Azure Front Door'
+                  inputs:
+                    azureSubscription: $(azureSubscription)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az network front-door backend-pool backend update \
+                        --front-door-name healthcare-ai-fd \
+                        --name healthcare-backend \
+                        --resource-group $(resourceGroupName) \
+                        --address healthcare-ai.$(aksClusterName).eastus.cloudapp.azure.com
+
+                - task: AzureCLI@2
+                  displayName: 'Post-deployment Smoke Tests'
+                  inputs:
+                    azureSubscription: $(azureSubscription)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      sleep 30
+                      kubectl wait --for=condition=ready pod -l app=healthcare-ai-ui -n $(namespace) --timeout=300s
+                      kubectl wait --for=condition=ready pod -l app=healthcare-ai-crewai -n $(namespace) --timeout=300s
+                      kubectl wait --for=condition=ready pod -l app=healthcare-ai-autogen -n $(namespace) --timeout=300s
+                      
+                      # Health check endpoints
+                      UI_IP=$(kubectl get svc healthcare-ai-ui -n $(namespace) -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                      curl -f http://$UI_IP/health || exit 1
+
+  - stage: PostDeployment
+    displayName: 'Post-Deployment Validation'
+    dependsOn: DeployProd
+    condition: succeeded()
+    jobs:
+      - job: IntegrationTests
+        displayName: 'Run Integration Tests'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+
+          - script: |
+              pip install pytest requests
+              pytest tests/integration/ --junitxml=junit/integration-test-results.xml
+            displayName: 'Run Integration Tests'
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFiles: '**/integration-test-*.xml'
+              testRunTitle: 'Integration Tests'
+
+      - job: PerformanceTests
+        displayName: 'Run Performance Tests'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - script: |
+              pip install locust
+              locust -f tests/performance/locustfile.py --headless -u 100 -r 10 --run-time 5m --host https://healthcare-ai.azurefd.net
+            displayName: 'Run Load Tests'
+
+      - job: SecurityValidation
+        displayName: 'Security Validation'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Run OWASP ZAP Scan'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                docker run -t owasp/zap2docker-stable zap-baseline.py \
+                  -t https://healthcare-ai.azurefd.net \
+                  -r zap-report.html || true
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: 'zap-report.html'
+              ArtifactName: 'security-scan-results'
